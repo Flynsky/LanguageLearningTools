@@ -10,6 +10,8 @@ foliate out_db.epub
 
  ## Test Ollama
  ````
+curl -fsSL https://ollama.com/install.sh | sh
+ollama serve
 ollama pull qwen2.5:0.5b
 ollama run qwen2.5:0.5b "Translate to English: Hola, ¿cómo estás?"
 ````

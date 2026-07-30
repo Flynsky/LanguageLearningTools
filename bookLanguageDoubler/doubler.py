@@ -5,7 +5,7 @@ For each paragraph in an EPUB, insert an English translation
 
 Optionally:
 - Change the book title.
-- Only process the first chapter (--debug).
+- Only process the first chapters (--debug).
 - Render translations in italics.
 - Render translations in a smaller font.
 
@@ -29,21 +29,29 @@ Requires:
 """
 
 import argparse
+
 import requests
 import ebooklib
 from ebooklib import epub
 from bs4 import BeautifulSoup, NavigableString
 
+DEBUG_COMPILED_CHAPTERS = 15
 
-def translate_text(text: str, model: str, ollama_url: str, source_lang: str) -> str:
+def translate_text(
+    text: str,
+    model: str,
+    ollama_url: str,
+    source_lang: str,
+) -> str:
     """Translate a string using a local Ollama model."""
+
     if not text.strip():
         return text
 
     prompt = (
         f"Translate the following {source_lang} text to English. "
-        "Ignore broken text"
-        "Respond with ONLY the translation."
+        "Ignore broken text. "
+        "Respond with ONLY the translation. "
         "Do not add notes, quotation marks, explanations, or commentary.\n\n"
         f"{text}"
     )
@@ -73,44 +81,71 @@ def translate_text(text: str, model: str, ollama_url: str, source_lang: str) -> 
     return response.json()["response"].strip()
 
 
-def add_translation_style(
-    soup: BeautifulSoup,
+def create_translation_css(
     italic: bool,
     small: bool,
-):
-    """Inject CSS for translated paragraphs."""
-
-    if not soup.head:
-        return
+) -> epub.EpubItem:
+    """Create stylesheet for translated paragraphs."""
 
     css = [".translation {"]
 
     if italic:
-        css.append("font-style: italic;")
+        css.append("    font-style: italic;")
 
     if small:
-        css.append("font-size: 0.9em;")
+        css.append("    font-size: 0.9em;")
 
     css.append("}")
 
-    style = soup.new_tag("style")
-    style.string = "\n".join(css)
-    soup.head.append(style)
+    return epub.EpubItem(
+        uid="translation_style",
+        file_name="style/translation.css",
+        media_type="text/css",
+        content="\n".join(css).encode("utf-8"),
+    )
+
+
+def add_stylesheet_link(html_content: bytes) -> bytes:
+    """Add EPUB stylesheet link to an XHTML document."""
+
+    soup = BeautifulSoup(
+        html_content,
+        "html.parser",
+    )
+
+    if not soup.head:
+        return html_content
+
+    existing = soup.find(
+        "link",
+        href="style/translation.css",
+    )
+
+    if not existing:
+        link = soup.new_tag(
+            "link",
+            rel="stylesheet",
+            type="text/css",
+            href="style/translation.css",
+        )
+
+        soup.head.append(link)
+
+    return str(soup).encode("utf-8")
 
 
 def add_translated_lines_to_html(
-    html_content: str,
+    html_content: bytes,
     model: str,
     ollama_url: str,
     source_lang: str,
-    italic: bool = False,
-    small: bool = False,
-) -> str:
+) -> bytes:
     """Insert translated paragraphs after every original paragraph."""
 
-    soup = BeautifulSoup(html_content, "html.parser")
-
-    add_translation_style(soup, italic, small)
+    soup = BeautifulSoup(
+        html_content,
+        "html.parser",
+    )
 
     paragraphs = soup.find_all("p")
 
@@ -128,12 +163,13 @@ def add_translated_lines_to_html(
         )
 
         translation_p = soup.new_tag("p")
-        translation_p["class"] = "translation"
-        translation_p.append(NavigableString(translated))
+        translation_p.append(
+            NavigableString(f"> {translated} <")
+        )
 
         p.insert_after(translation_p)
 
-    return str(soup)
+    return str(soup).encode("utf-8")
 
 
 def process_epub(
@@ -149,6 +185,13 @@ def process_epub(
 ):
     book = epub.read_epub(input_path)
 
+    translation_css = create_translation_css(
+        translation_italic,
+        translation_small,
+    )
+
+    book.add_item(translation_css)
+
     doc_items = [
         item
         for item in book.get_items()
@@ -157,38 +200,52 @@ def process_epub(
 
     if debug:
         print("DEBUG MODE: processing only the first chapters.")
-        doc_items = doc_items[:4]
+        doc_items = doc_items[:DEBUG_COMPILED_CHAPTERS]
 
     total = len(doc_items)
 
     for i, item in enumerate(doc_items, start=1):
-        print(f"Translating chapter {i}/{total}: {item.get_name()}")
+        print(
+            f"Translating chapter {i}/{total}: "
+            f"{item.get_name()}"
+        )
 
-        original = item.get_content().decode("utf-8", errors="ignore")
+        content = item.get_content()
 
-        translated = add_translated_lines_to_html(
-            original,
+        content = add_stylesheet_link(content)
+
+        content = add_translated_lines_to_html(
+            content,
             model,
             ollama_url,
             source_lang,
-            italic=translation_italic,
-            small=translation_small,
         )
 
-        item.set_content(translated.encode("utf-8"))
+        item.set_content(content)
 
     if title:
-        book.metadata["http://purl.org/dc/elements/1.1/"]["title"] = []
+        book.metadata[
+            "http://purl.org/dc/elements/1.1/"
+        ]["title"] = []
+
         book.set_title(title)
 
-    epub.write_epub(output_path, book)
+    epub.write_epub(
+        output_path,
+        book,
+    )
 
-    print(f"\nDone.\nOutput written to:\n{output_path}")
+    print(
+        f"\nDone.\nOutput written to:\n{output_path}"
+    )
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Insert an English translation after every paragraph in an EPUB using Ollama."
+        description=(
+            "Insert an English translation after every paragraph "
+            "in an EPUB using Ollama."
+        )
     )
 
     parser.add_argument(
@@ -221,25 +278,25 @@ def main():
 
     parser.add_argument(
         "--title",
-        help="New title for the output EPUB",
+        help="New title for output EPUB",
     )
 
     parser.add_argument(
         "--debug",
         action="store_true",
-        help="Only translate the first chapter.",
+        help="Only translate the first chapters",
     )
 
     parser.add_argument(
         "--translation-italic",
         action="store_true",
-        help="Render translated paragraphs in italics.",
+        help="Render translated paragraphs in italics",
     )
 
     parser.add_argument(
         "--translation-small",
         action="store_true",
-        help="Render translated paragraphs in a smaller font.",
+        help="Render translated paragraphs smaller",
     )
 
     args = parser.parse_args()
