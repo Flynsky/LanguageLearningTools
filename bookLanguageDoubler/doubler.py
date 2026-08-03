@@ -416,6 +416,16 @@ def translate_chunk_resilient(
     translations = parse_batch_response(raw, len(chunk))
 
     if translations is None:
+        if len(chunk) == 1:
+            # Single line: don't re-invoke the same batch-parsing path -
+            # that's what caused an infinite recursion loop before this
+            # fix (a model that never wraps output in "1. ..." format
+            # would fail to parse forever). Just use the raw output
+            # directly, stripping a stray leading number prefix if the
+            # model added one anyway.
+            cleaned = re.sub(r"^\s*\d+\.\s*", "", raw).strip()
+            return [cleaned]
+
         # The model didn't return a clean numbered list we can parse
         # reliably - fall back to one call per line, each handled
         # resiliently too, so nothing is lost.
