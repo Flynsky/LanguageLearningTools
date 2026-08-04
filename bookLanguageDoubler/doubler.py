@@ -73,6 +73,7 @@ class OllamaConfig:
     max_batch_lines: int = 20
     keep_alive: str = "30m"
     num_ctx: int | None = None
+    num_gpu: int | None = None
     prompt_style: str = "generic"
 
 
@@ -199,6 +200,9 @@ def ollama_generate(
     calls (avoids reload overhead on every request during a long run).
     `config.num_ctx`, if set, trims the context window, which can free
     VRAM for more layers to fit on GPU.
+    `config.num_gpu`, if set, controls how many layers are offloaded to
+    GPU (0 = force CPU-only, useful for A/B testing whether partial GPU
+    offload is actually faster than pure CPU on a given card).
     """
 
     payload = {
@@ -207,8 +211,13 @@ def ollama_generate(
         "stream": False,
         "keep_alive": config.keep_alive,
     }
+    options = {}
     if config.num_ctx:
-        payload["options"] = {"num_ctx": config.num_ctx}
+        options["num_ctx"] = config.num_ctx
+    if config.num_gpu is not None:
+        options["num_gpu"] = config.num_gpu
+    if options:
+        payload["options"] = options
 
     last_error: Exception | None = None
 
@@ -556,6 +565,14 @@ def add_stylesheet_link(html_content: bytes) -> bytes:
     return str(soup).encode("utf-8")
 
 
+ORIGINAL_LANG_SENTINELS = {"original", "default", "none", "source"}
+
+
+def is_original_sentinel(lang: str | None) -> bool:
+    """True if `lang` means 'just use the original text, no translation'."""
+    return lang is not None and lang.strip().lower() in ORIGINAL_LANG_SENTINELS
+
+
 def add_translated_lines_to_html(
     html_content: bytes,
     model: str,
@@ -594,7 +611,7 @@ def add_translated_lines_to_html(
 
         lines = split_into_lines(original_text)
 
-        if first_lang:
+        if first_lang and not is_original_sentinel(first_lang):
             first_lines = translate_lines(
                 lines,
                 model,
@@ -610,27 +627,34 @@ def add_translated_lines_to_html(
                 if i > 0:
                     p.append(soup.new_tag("br"))
                 p.append(NavigableString(line))
-        # else: leave the original paragraph text exactly as it is.
+        # else: leave the original paragraph text exactly as it is
+        # (either first_lang wasn't set, or it's an "original"/"default"
+        # sentinel meaning the same thing).
 
         if second_lang:
-            second_lines = translate_lines(
-                lines,
-                model,
-                ollama_url,
-                source_lang,
-                second_lang,
-                cache,
-                config,
-                stats,
-            )
+            if is_original_sentinel(second_lang):
+                second_lines = lines  # no translation call, reuse as-is
+            else:
+                second_lines = translate_lines(
+                    lines,
+                    model,
+                    ollama_url,
+                    source_lang,
+                    second_lang,
+                    cache,
+                    config,
+                    stats,
+                )
 
             translation_p = soup.new_tag("p")
             translation_p["class"] = "translation"
 
+            translation_p.append(NavigableString("> "))
             for i, translated in enumerate(second_lines):
                 if i > 0:
                     translation_p.append(soup.new_tag("br"))
-                translation_p.append(NavigableString(f"> {translated} <"))
+                translation_p.append(NavigableString(translated))
+            translation_p.append(NavigableString(" <"))
 
             p.insert_after(translation_p)
         # else: no second line is inserted at all.
@@ -647,7 +671,7 @@ def process_epub(
     first_lang: str | None = None,
     second_lang: str | None = None,
     title: str | None = None,
-    debug: bool = False,
+    debug: int | None = None,
     translation_italic: bool = True,
     translation_small: bool = True,
     ollama_config: OllamaConfig | None = None,
@@ -669,9 +693,9 @@ def process_epub(
         if item.get_type() == ebooklib.ITEM_DOCUMENT
     ]
 
-    if debug:
-        print("DEBUG MODE: processing only the first chapters.")
-        doc_items = doc_items[:DEBUG_COMPILED_CHAPTERS]
+    if debug is not None:
+        print(f"DEBUG MODE: processing only the first {debug} chapter{'s' if debug != 1 else ''}.")
+        doc_items = doc_items[:debug]
 
     total = len(doc_items)
 
@@ -798,7 +822,8 @@ def main():
         help=(
             "Language to render the ORIGINAL line as. "
             "Default: none, meaning the original text is left "
-            "untouched (no translation call made for it)."
+            "untouched (no translation call made for it). "
+            "Pass 'original' or 'default' explicitly for the same effect."
         ),
     )
 
@@ -808,7 +833,10 @@ def main():
         help=(
             "Language for the new line inserted after the original. "
             "Default: none, meaning no second line is inserted at all "
-            "(no API call made for it)."
+            "(no API call made for it). Pass 'original' or 'default' to "
+            "insert the original text unchanged as the second line too "
+            "(no API call) - useful for checking line-splitting/alignment "
+            "before spending time on real translation."
         ),
     )
 
@@ -822,8 +850,17 @@ def main():
 
     parser.add_argument(
         "--debug",
-        action="store_true",
-        help="Only translate the first chapters",
+        type=int,
+        nargs="?",
+        const=DEBUG_COMPILED_CHAPTERS,
+        default=None,
+        metavar="N",
+        help=(
+            f"Only translate the first N chapters, e.g. '--debug 2' for "
+            f"just the first 2 (default N if flag given with no value: "
+            f"{DEBUG_COMPILED_CHAPTERS}). Omit entirely to process the "
+            f"whole book."
+        ),
     )
 
     parser.add_argument(
@@ -913,6 +950,21 @@ def main():
         ),
     )
 
+    parser.add_argument(
+        "--num-gpu",
+        type=int,
+        default=None,
+        help=(
+            "Number of model layers to offload to GPU (default: Ollama's "
+            "own automatic choice). Set to 0 to force pure CPU inference - "
+            "useful for A/B testing whether partial GPU offload is even "
+            "faster than CPU-only on a given card, since handoff overhead "
+            "between CPU and GPU layers isn't always worth it on older "
+            "GPUs. Compare the 'generation tok/s' in the bottleneck check "
+            "between a run with this at 0 and one without it set."
+        ),
+    )
+
     args = parser.parse_args()
 
     ollama_config = OllamaConfig(
@@ -921,6 +973,7 @@ def main():
         max_batch_lines=args.max_batch_lines,
         keep_alive=args.keep_alive,
         num_ctx=args.num_ctx,
+        num_gpu=args.num_gpu,
         prompt_style=args.prompt_style,
     )
 
