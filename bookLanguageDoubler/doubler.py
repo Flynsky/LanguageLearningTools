@@ -47,7 +47,8 @@ Requires:
     pip install ebooklib beautifulsoup4 requests
 
     Ollama running locally:
-        ollama pull llama3.1
+        ollama pull translategemma:4b
+
 """
 
 import argparse
@@ -61,6 +62,7 @@ from ebooklib import epub
 from bs4 import BeautifulSoup, NavigableString
 
 DEBUG_COMPILED_CHAPTERS = 15
+ETA_SKIP_FIRST_N_CHAPTERS = 3
 
 
 @dataclass
@@ -738,7 +740,17 @@ def process_epub(
         chapter_elapsed = time.time() - chapter_start
         chapter_durations.append(chapter_elapsed)
 
-        avg_per_chapter = sum(chapter_durations) / len(chapter_durations)
+        # Front-matter chapters (cover, title page, dedication, TOC...)
+        # are usually much shorter than real content chapters and would
+        # skew the average low early on. Once enough chapters have run,
+        # base the ETA only on chapters after the first few; until then,
+        # fall back to whatever's available so there's still an estimate.
+        eta_sample = (
+            chapter_durations[ETA_SKIP_FIRST_N_CHAPTERS:]
+            if len(chapter_durations) > ETA_SKIP_FIRST_N_CHAPTERS
+            else chapter_durations
+        )
+        avg_per_chapter = sum(eta_sample) / len(eta_sample)
         remaining_chapters = total - i
         eta_seconds = avg_per_chapter * remaining_chapters
         total_elapsed = time.time() - run_start
