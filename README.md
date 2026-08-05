@@ -1,12 +1,15 @@
 ## How to use Languagedoubler
 
-![demo picture](./doc/pic/demo.png)
+This is an AI tool that adds translations to e-books in the epub format. Features:
 
-This is an AI tool that adds translations to e-books in the epub format.
-You can:
-- Translate a full book in a different language
+- Translate a full book into a different language
 - Translate a full book in a different language and add the original text below each paragraph
 - Add a translated paragraph below each original one
+
+The AI uses Ollama,
+so it can either use a local AI like translategemma or an API to a cloud AI like GPT or Claude.
+
+![demo picture](./doc/pic/demo.png)
 
 ## Get Started 
 ````
