@@ -604,9 +604,12 @@ def add_translated_lines_to_html(
     paragraphs = soup.find_all("p")
 
     for p in paragraphs:
-        # Preserve <br> boundaries as newlines so poetry/dialogue lines
-        # are split correctly; falls back to sentence splitting below.
-        original_text = p.get_text(separator="\n", strip=True)
+        # Preserve only real <br> boundaries. Do not let inline tags
+        # like <span>, <em>, <strong>, etc. create fake line breaks.
+        if p.find("br"):
+            original_text = p.get_text(separator="\n", strip=True)
+        else:
+            original_text = p.get_text(" ", strip=True)
 
         if not original_text.strip():
             continue
