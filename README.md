@@ -1,4 +1,7 @@
 ## How to use Languagedoubler
+
+![demo picture](./doc/pic/demo.png)
+
 ````
 pip install
 sudo dnf install ollama
